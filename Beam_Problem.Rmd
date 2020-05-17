@@ -1,0 +1,271 @@
+---
+title: "Beam_problem"
+output: html_document
+---
+
+
+
+```{r}
+library(pacman)
+p_load(tidyverse,stringr)
+
+#Reading files
+files <- list.files("results/rawdata/")
+files <- files[1:9]
+files <- paste("results/rawdata/", files,sep="")
+files2 <- list.files("results2/rawdata/")
+files2 <- files2[1:9]
+files2 <- paste("results2/rawdata/", files2,sep="")
+files <- c(files,files2)
+
+df<- read.csv(files[1])
+beams <- as.data.frame(matrix(0,ncol=5,nrow=1))
+colnames(df)
+colnames(beams) <- c(colnames(df), "filename")
+
+for(file in files){
+  df<- read.csv(file)
+  df$filename <- file
+  alist <- c()
+  for(i in 1:5){
+    a <- (df$AllScores[i])
+    b<- as.numeric(unlist(str_split(str_remove_all(as.character(a), "\\[|\\]"), ",")))
+    alist <- c(alist, b)
+  }
+  df$AllScores <- alist
+  beams <- rbind(beams,df)
+}
+beams <- beams[-1,]
+
+alist <- c()
+#Reading files from teamstyle_inbetween.py
+newBeams <- read.csv("Beam_aitotal.csv")
+for(i in 1:16){
+  a <- (newBeams$AllScores[i])
+  b<- as.numeric(unlist(str_split(str_remove_all(as.character(a), "\\[|\\]"), ",")))
+  alist <- c(alist, b)
+}
+
+newBeams$AllScores <- alist
+newBeams$filename <- 0
+beams$orig <- 1
+newBeams$orig <- 0
+beams <- rbind(beams,newBeams)
+
+###CLEANUP
+beams$kaiscore <- str_remove(beams$filename, "results2")
+beams$kaiscore <- str_remove((str_extract(beams$kaiscore, "[:digit:].*")), ".csv")
+beams$kaiscore<- ifelse(substr(beams$kaiscore, 1,1)=="2", str_sub(beams$kaiscore, 2),beams$kaiscore)
+
+beams$AllScores <- as.numeric(beams$AllScores)
+beams$AiRanges <- as.factor(beams$AllAiScores)
+beams$kaiscore <- as.factor(beams$kaiscore)
+
+#function for calculating mean kai pr. team
+mean_KAI <- function(aiScore, aiRange, nAgents){
+  minScore = max(c(40, aiScore-aiRange/2.0))
+  maxScore = min(c(150, aiScore+aiRange/2.0))
+  aiScores = seq(minScore,maxScore,length.out =  nAgents)
+  m <- mean(aiScores)
+  return(m)
+}
+
+#function for calculating max kai pr. team
+max_KAI <- function(aiScore, aiRange, nAgents){
+  minScore = max(c(40, aiScore-aiRange/2.0))
+  maxScore = min(c(150, aiScore+aiRange/2.0))
+  aiScores = seq(minScore,maxScore,length.out =  nAgents)
+  m <- max(aiScores)
+  return(m)
+}
+
+#function for calculating min kai pr. team
+min_KAI <- function(aiScore, aiRange, nAgents){
+  minScore = max(c(40, aiScore-aiRange/2.0))
+  maxScore = min(c(150, aiScore+aiRange/2.0))
+  aiScores = seq(minScore,maxScore,length.out =  nAgents)
+  m <- min(aiScores)
+  return(m)
+}
+
+
+beams$aiRange <- as.numeric(as.character(beams$AllAiScores))
+beams$kaiscore_numeric <- as.numeric(as.character(beams$kaiscore))
+
+#Adding useful variables
+beams <- beams %>% 
+  group_by(kaiscore,AllAiScores) %>% 
+  mutate(mean_score = mean(AllScores),
+         sd_score = sd(AllScores),
+         max_score = max(AllScores),
+         mean_kaiscore = mean_KAI(kaiscore_numeric,aiRange,33 ),
+         max_kaiscore = max_KAI(kaiscore_numeric,aiRange,33),
+         min_kaiscore = min_KAI(kaiscore_numeric,aiRange,33)) %>% 
+  mutate(true_range=max_kaiscore-min_kaiscore)
+
+```
+
+```{r}
+#Plotting
+for(level in levels(beams$kaiscore)){
+  a <- ggplot(beams[beams$kaiscore == level,], aes(true_range, AllScores, group = true_range)) +
+    geom_point()+   
+    stat_summary(fun.y = mean, colour="blue", geom="line", aes(group=1))+
+    geom_point(beams[beams$kaiscore == level,],mapping= aes(true_range,mean_score, color = "red"))+
+    geom_errorbar(aes(ymin=mean_score-sd_score, ymax=mean_score+sd_score), width=.2,
+                 position=position_dodge(0.05),color="red", alpha = .5)+
+    ggtitle(paste("mean Kaiscore = ", as.character(level), sep = " "))+
+    theme_clean()+
+    xlab("KaiRange")+ylab("Beam Design Performance")+
+    ylim(-18,-12)
+  
+  print(a+theme(legend.position="none"))
+}
+```
+
+
+
+```{r}
+p_load(brms,rethinking, bayesplot)
+
+total_beam <- beams[beams$orig == 1,]
+
+total_beam$kaiscore <- as.numeric(as.character(total_beam$kaiscore))
+total_beam$scaled_scores <- scale(total_beam$AllScores)
+total_beam$mean_kaiscore_scale <- scale(total_beam$mean_kaiscore)
+total_beam$true_range_scaled <- scale(total_beam$true_range)
+
+#creating model
+model_beam_simple <- bf(
+  scaled_scores  ~ 1 + true_range_scaled, family = skew_normal()
+)
+
+#checking priors
+get_prior(model_beam_simple, data = total_beam)
+
+#creating priors
+priors_simple <- c(
+  prior(normal(0,8), class=alpha),
+  prior(normal(0, .5), class =Intercept),
+  prior(normal(0,.1), class = b),
+  prior(normal(0,.05), class = sigma)
+)
+
+#prior_model brm
+pp <- brm(
+  model_beam_simple, 
+  prior = priors_simple,
+  data = total_beam,
+  family = "skew_normal",
+  cores = 4,
+  sample_prior = "only",
+  control = list(adapt_delta = 0.9)
+)
+
+#prior predictive check
+pp_check(pp, nsamples = 100)+xlim(-2,3)
+
+#Markov Chain Monte Carlo trace plots
+mcmc_trace(pp)
+
+#Run model to data
+Beam_simple <- brm(
+  model_beam_simple, 
+  prior = priors_simple,
+  data = total_beam,
+  family = "skew_normal",
+  cores = 4,
+  sample_prior = T,
+  control = list(adapt_delta = 0.9)
+)
+
+#posterior predictive check
+pp_check(Beam_simple, nsamples = 100)+xlim(-3,3)
+
+#Markov Chain Monte Carlo trace plots
+mcmc_trace(Beam_simple)
+
+#check model convergence
+summary(Beam_simple)
+
+#hypothesis check
+plot(hypothesis(Beam_simple, c("true_range_scaled < 0")))
+
+#check conditional effects
+conditional_effects(Beam_simple)
+
+#add loo information criterion
+Beam_simple <- add_criterion(Beam_simple, "loo")
+```
+
+
+```{r}
+#Create model
+model_beam_int <- bf(
+  scaled_scores  ~ 1 + mean_kaiscore_scale+ true_range_scaled+mean_kaiscore_scale:true_range_scaled, family = skew_normal()
+)
+
+#check priors
+get_prior(model_beam_int, data = total_beam)
+
+#Create priors
+priors_int <- c(
+  prior(normal(0,8), class=alpha),
+  prior(normal(0, .5), class =Intercept),
+  prior(normal(0,.1), class = b),
+  prior(normal(0,.05), class = sigma)
+)
+
+#prior_model brm
+pp_int <- brm(
+  model_beam_int, 
+  prior = priors_int,
+  data = total_beam,
+  family = "skew_normal",
+  cores = 4,
+  sample_prior = "only",
+  control = list(adapt_delta = 0.9)
+)
+
+#prior predictive checks
+pp_check(pp_int, nsamples = 100)+xlim(-2,3)
+
+#Markov Chain Monte Carlo trace plots
+mcmc_trace(pp_int)
+
+#Run model to data
+Beam_int <- brm(
+  model_beam_int, 
+  prior = priors_int,
+  data = total_beam,
+  family = "skew_normal",
+  cores = 4,
+  sample_prior = T,
+  control = list(adapt_delta = 0.9)
+)
+
+#Posterior predictive checks
+pp_check(Beam_int, nsamples = 100)+xlim(-3,3)
+
+#Markov Chain Monte Carlo trace plots
+mcmc_trace(Beam_int)
+
+#check model convergence
+summary(Beam_int)
+
+#check hypothesis plots
+plot(hypothesis(Beam_int, c("true_range_scaled < 0",
+                       "mean_kaiscore_scale >0",
+                       "mean_kaiscore_scale:true_range_scaled < 0")))
+
+#check conditional effects
+conditional_effects(Beam_int)
+
+#add loo information criterion
+Beam_int <- add_criterion(Beam_int, "loo")
+
+#comparing models
+loo_model_weights(Beam_int,Beam_simple)
+```
+
+
