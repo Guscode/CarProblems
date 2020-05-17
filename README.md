@@ -8,4 +8,4 @@ To run simulation, download the kaboom folder, install in anaconda environment a
 ```
 kaboom.IDETC_studies.teamdiversity.run()
 kaboom.IDETC_studies.i_teamStyle_inbetween.run()
-´´´
+```
