@@ -1,0 +1,580 @@
+---
+title: "Social and cultural ABM analysis"
+author: "Study group 12"
+date: "29/04/2020"
+output:   
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+library(pacman)
+p_load(tidyverse,stringr)
+p_load(brms,rethinking, bayesplot)
+
+total <- read_csv("all_the_data.csv")
+```
+
+
+```{r}
+
+for(level in levels(total$kaiscore)){
+  a <- ggplot(total[total$kaiscore == level,], aes(AllAiScores, AllScores, group = AllAiScores)) +
+    geom_point()+   
+    stat_summary(fun.y = mean, colour="blue", geom="line", aes(group=1))+
+    geom_point(total[total$kaiscore == level,],mapping= aes(AllAiScores,mean_score, color = "red"))+
+    geom_errorbar(aes(ymin=mean_score-sd_score, ymax=mean_score+sd_score), width=.2,
+                 position=position_dodge(0.05),color="red", alpha = .5)+
+    ggtitle(paste("mean Kaiscore = ", as.character(level), sep = " "))+
+    xlab("KaiRange")+ylab("Car Design Performance")
+  
+  print(a)
+}
+
+
+```
+
+```{r}
+total$kaiscore <- as.numeric(as.character(total$kaiscore))
+total$scaled_scores <- scale(total$AllScores)
+total$kaiscore_scale <- scale(total$kaiscore)
+total$aiRange_scale <- scale(total$aiRange)
+total$mean_kaiscore_scale <- scale(total$mean_kaiscore)
+total$max_kaiscore_scale <- scale(total$max_kaiscore)
+total$min_kaiscore_scale <- scale(total$min_kaiscore)
+total$true_range_scale <- scale(total$true_range)
+
+#function for performing min max normalization
+normalize <- function(x)
+{
+    return((x- min(x)) /(max(x)-min(x)))
+}
+
+#normalizing scores
+total$normalized_scores <- normalize(total$AllScores)
+
+#Couldn't get conceptual min and max scores so using min and max scores obtained
+total_2 <- total %>% filter(normalized_scores != 0 & normalized_scores != 1)
+
+```
+
+
+Min-max models
+
+Mean model without interaction
+```{r}
+
+#specifying model predicting score from mean KAI score and KAi score range of team
+model_beta <- bf(
+  normalized_scores  ~ 1 + mean_kaiscore_scale + true_range_scale, family = "beta"
+)
+
+#Defining priors
+get_prior(model_beta, data = total_2)
+priors_beta <- c(
+  prior(normal(0, 1.5), class =Intercept),
+  prior(normal(0,.5), class = b),
+  prior(normal(30,10), class = phi)
+)
+
+#mean model priors
+mean_beta_0_prior <- brm(
+  model_beta, 
+  prior = priors_beta,
+  data = total_2,
+  cores = 4,
+  sample_prior = "only",
+  control = list(adapt_delta = 0.999)
+)
+
+#prior predictive check
+(m_b_0_pri <- pp_check(mean_beta_0_prior, nsamples = 100) +
+    ggtitle("Prior predictive check, Model 1"))
+
+#inspecting chains
+mcmc_trace(mean_beta_0_prior)
+
+#mean model posteriors
+mean_beta_0_posterior <- brm(
+  model_beta, 
+  prior = priors_beta,
+  data = total_2,
+  cores = 4,
+  sample_prior = T,
+  control = list(adapt_delta = 0.999)
+)
+
+#posterior predictive check
+(m_b_0_pos <- pp_check(mean_beta_0_posterior, nsamples = 100) +
+    ggtitle("Posterior predictive check, Model 1"))
+
+#inspecting chains
+trace_m_b_0 <- mcmc_trace(mean_beta_0_posterior, pars = c("b_Intercept", "b_mean_kaiscore_scale", "b_true_range_scale")) + ggtitle("Markov Chain Monte Carlo trace plots, Model 1")
+
+#model summary
+summary(mean_beta_0_posterior)
+
+#hypothesis testing
+hypothesis(mean_beta_0_posterior, c("true_range_scale > 0",
+                  "mean_kaiscore_scale > 0"))
+
+#plotting model effects
+conditional_effects(mean_beta_0_posterior)
+
+#adding IC criteria
+mean_beta_0_posterior <- add_criterion(mean_beta_0_posterior, "loo", reloo = T)
+mean_beta_0_posterior <- add_criterion(mean_beta_0_posterior, "waic")
+```
+
+Mean model with interaction
+```{r}
+
+#updating formula to include interaction and computing priors
+mean_beta_1_prior <- update(mean_beta_0_prior, 
+                            bf(normalized_scores  ~ 1 + mean_kaiscore_scale + true_range_scale +
+                                 mean_kaiscore_scale:true_range_scale, family = "beta"))
+
+#prior predictive check
+(m_b_1_pri <- pp_check(mean_beta_1_prior, nsamples = 100) + 
+    ggtitle("Prior predictive check, Model 2"))
+
+#inspecting chains
+mcmc_trace(mean_beta_1_prior)
+
+
+
+#updating formula to include interaction and computing posteriors
+# mean_beta_1_posterior <- update(mean_beta_0_posterior, 
+#                             bf(normalized_scores  ~ 1 + mean_kaiscore_scale + true_range_scale +
+#                                  mean_kaiscore_scale:true_range_scale, family = "beta"))
+
+mean_beta_1_posterior <- brm(
+  bf(normalized_scores  ~ 1 + mean_kaiscore_scale + true_range_scale +
+                                 mean_kaiscore_scale:true_range_scale, family = "beta"), 
+  prior = priors_beta,
+  data = total_2,
+  cores = 4,
+  sample_prior = T,
+  control = list(adapt_delta = 0.999)
+)
+
+#posterior predictive check
+(m_b_1_pos <- pp_check(mean_beta_1_posterior, nsamples = 100) + 
+    ggtitle("Posterior predictive check, Model 2"))
+
+#inspecting chains
+trace_m_b_1 <- mcmc_trace(mean_beta_1_posterior, pars = c("b_Intercept", "b_mean_kaiscore_scale",
+                                                          "b_true_range_scale",
+                                                          "b_mean_kaiscore_scale:true_range_scale")) +
+  ggtitle("Markov Chain Monte Carlo trace plots, Model 2")
+
+#model summary
+summary(mean_beta_1_posterior)
+
+#hypothesis testing
+hypothesis(mean_beta_1_posterior, c("true_range_scale > 0",
+                  "mean_kaiscore_scale > 0",
+                  "mean_kaiscore_scale:true_range_scale < 0"))
+
+#plotting model effects
+conditional_effects(mean_beta_1_posterior)
+
+
+```
+
+Plotting for mean models
+```{r}
+
+#average predictions from mean models
+avg_dat_int <- tibble()
+for (i in c(-1:1)){ #looping with pp average to generate predictions for different values of range
+  nd <- tibble(mean_kaiscore_scale = seq(-1,1, length.out = 200),
+               true_range_scale = i)
+  pp_avg <- pp_average(mean_beta_0_posterior, mean_beta_1_posterior,
+             method = "fitted",
+             newdata = nd) %>% 
+    as_tibble() %>% 
+    bind_cols(nd)
+  avg_dat_int <- bind_rows(avg_dat_int, pp_avg)
+}
+  
+avg_dat_int$true_range_scale <- as.factor(avg_dat_int$true_range_scale)  #as factor for grouping
+
+#plotting data
+avg_dat_int %>% 
+  ggplot(aes(x = mean_kaiscore_scale, y = Estimate, fill = true_range_scale,
+             color = true_range_scale))+
+  geom_smooth(aes(y = Estimate, ymin = Q2.5, ymax = Q97.5), stat = "identity")+
+  labs(y = "Normalized Scores", x = "Scaled mean team KAI score", 
+       color = "Scaled KAI range of team", fill = "Scaled KAI range of team")+
+  theme_bw()+
+  ggtitle("Average effect of interaction of model 1 & 2")
+
+#generating predictions for the effect of range excluding the interaction
+nd <- tibble(mean_kaiscore_scale = -1, #keep mean kai constant
+               true_range_scale = seq(-1,1, length.out = 200))
+pp_avg <- pp_average(mean_beta_0_posterior, mean_beta_1_posterior,
+             method = "fitted",
+             newdata = nd) %>% 
+    as_tibble() %>% 
+    bind_cols(nd)
+
+#plotting data
+pp_avg %>% 
+  ggplot(aes(x = true_range_scale, y = Estimate))+
+  geom_smooth(aes(y = Estimate, ymin = Q2.5, ymax = Q97.5), stat = "identity")+
+  labs(y = "Normalized Scores", x = "Scaled KAI range of team")+
+  theme_bw()+
+  ggtitle("Average effects of KAI score range in model 1 & 2", "Scaled team KAI score = -1")
+
+
+#plotting hypotheses mean model without interaction
+gridExtra::grid.arrange(
+  plot(hypothesis(mean_beta_0_posterior, "true_range_scale > 0"))[[1]]+ 
+      ggtitle("Effect of KAI range on performance", "4.a"),
+  plot(hypothesis(mean_beta_0_posterior, "mean_kaiscore_scale > 0"))[[1]]+ 
+      ggtitle("Effect of KAI score on performance", "4.b"), nrow = 2)
+
+#plotting hypotheses mean model with interaction
+gridExtra::grid.arrange(
+  plot(hypothesis(mean_beta_1_posterior,"true_range_scale > 0"))[[1]]+
+       ggtitle("Effect of KAI range on performance", "5.a"),
+  plot(hypothesis(mean_beta_1_posterior, "mean_kaiscore_scale > 0"))[[1]]+
+       ggtitle("Effect of KAI score on performance", "5.b"),
+  plot(hypothesis(mean_beta_1_posterior, "mean_kaiscore_scale:true_range_scale < 0"))[[1]]+
+       ggtitle("Difference in effect of KAI score depending on range", "5.c"),
+  nrow = 3)
+
+#adding IC criterion
+mean_beta_1_posterior <- add_criterion(mean_beta_1_posterior, "loo")
+
+#model comparison
+loo_compare(mean_beta_0_posterior, mean_beta_1_posterior, criterion = "loo")
+loo_model_weights(mean_beta_0_posterior, mean_beta_1_posterior)
+
+```
+
+
+Max model without interaction
+```{r}
+#specifying model predicting score from maximum KAI score on team and KAi score range of team
+model_beta <- bf(
+  normalized_scores  ~ 1 + max_kaiscore_scale + true_range_scale, family = "beta"
+)
+
+#Defining priors
+get_prior(model_beta, data = total_2)
+priors_beta <- c(
+  prior(normal(0, 1.5), class =Intercept),
+  prior(normal(0,.5), class = b),
+  prior(normal(30,10), class = phi)
+)
+
+#max model priors
+max_beta_0_prior <- brm(
+  model_beta, 
+  prior = priors_beta,
+  data = total_2,
+  cores = 4,
+  sample_prior = "only",
+  control = list(adapt_delta = 0.999)
+)
+
+#prior predictive check
+(ma_b_0_pri <- pp_check(max_beta_0_prior, nsamples = 100) + 
+    ggtitle("Prior predictive check, Model 3"))
+
+#inspecting chains
+mcmc_trace(max_beta_0_prior)
+
+#max model posteriors
+max_beta_0_posterior <- brm(
+  model_beta, 
+  prior = priors_beta,
+  data = total_2,
+  cores = 4,
+  sample_prior = T,
+  control = list(adapt_delta = 0.999)
+)
+
+#posterior predictive check
+(ma_b_0_pos <- pp_check(max_beta_0_posterior, nsamples = 100) + 
+    ggtitle("Posterior predictive check, Model 3"))
+
+#inspecting chains
+trace_ma_b_0 <-  mcmc_trace(max_beta_0_posterior, pars = c("b_Intercept", "b_max_kaiscore_scale",
+                                                          "b_true_range_scale")) +
+  ggtitle("Markov Chain Monte Carlo trace plots, Model 3")
+
+#model summary
+summary(max_beta_0_posterior)
+
+#hypothesis testing
+hypothesis(max_beta_0_posterior, c("true_range_scale < 0",
+                  "max_kaiscore_scale > 0"))
+
+#plotting model effects
+conditional_effects(max_beta_0_posterior)
+
+#adding IC criterion
+max_beta_0_posterior <- add_criterion(max_beta_0_posterior, "loo")
+```
+
+Max model with interaction
+```{r}
+#updating formula to include interaction and computing priors
+max_beta_1_prior <- update(max_beta_0_prior, 
+                            bf(normalized_scores  ~ 1 + max_kaiscore_scale + true_range_scale +
+                                 max_kaiscore_scale:true_range_scale, family = "beta"))
+
+#prior predictive check
+(ma_b_1_pri <- pp_check(max_beta_1_prior, nsamples = 100) + 
+    ggtitle("Prior predictive check, Model 4"))
+
+#inspecting chains
+mcmc_trace(max_beta_1_prior)
+
+#updating formula to include interaction and computing posteriors
+# max_beta_1_posterior <- update(max_beta_0_posterior, 
+#                             bf(normalized_scores  ~ 1 + max_kaiscore_scale + true_range_scale +
+#                                  max_kaiscore_scale:true_range_scale, family = "beta"))
+
+#max model posteriors
+max_beta_1_posterior <- brm(
+  bf(normalized_scores  ~ 1 + max_kaiscore_scale + true_range_scale +
+                                 max_kaiscore_scale:true_range_scale, family = "beta"), 
+  prior = priors_beta,
+  data = total_2,
+  cores = 4,
+  sample_prior = T,
+  control = list(adapt_delta = 0.999)
+)
+
+#posterior predictive check
+(ma_b_1_pos <- pp_check(max_beta_1_posterior, nsamples = 100) + 
+    ggtitle("Posterior predictive check, Model 4"))
+
+#inspecting chain
+trace_ma_b_1 <- mcmc_trace(max_beta_1_posterior,
+                           pars = c("b_Intercept", "b_max_kaiscore_scale",
+                                    "b_true_range_scale","b_max_kaiscore_scale:true_range_scale")) +
+  ggtitle("Markov Chain Monte Carlo trace plots, Model 4")
+
+#model summary
+summary(max_beta_1_posterior)
+
+#hypothesis testing
+hypothesis(max_beta_1_posterior, c("true_range_scale < 0",
+                  "max_kaiscore_scale > 0",
+                  "max_kaiscore_scale:true_range_scale < 0"))
+
+
+#plotting model effects
+conditional_effects(max_beta_1_posterior)
+
+
+#adding IC criterion
+max_beta_1_posterior <- add_criterion(max_beta_1_posterior, "loo")
+
+#comparing models
+print(loo_compare(max_beta_0_posterior, max_beta_1_posterior, criterion = "loo"), simplify = F)
+loo_model_weights(max_beta_0_posterior, max_beta_1_posterior)
+
+```
+
+
+Plotting effects of max KAI score models
+```{r}
+#Plotting hypotheses for model 3
+gridExtra::grid.arrange(
+  plot(hypothesis(max_beta_0_posterior, "true_range_scale > 0"))[[1]]+ 
+      ggtitle("Effect of KAI range on performance", "7.a"),
+  plot(hypothesis(max_beta_0_posterior, "max_kaiscore_scale > 0"))[[1]]+ 
+      ggtitle("Effect of max KAI score on performance", "7.b"), nrow = 2)
+
+#Plotting hypotheses for model 4
+gridExtra::grid.arrange(
+  plot(hypothesis(max_beta_1_posterior,"true_range_scale > 0"))[[1]]+
+       ggtitle("Effect of KAI range on performance", "8.a"),
+  plot(hypothesis(max_beta_1_posterior, "max_kaiscore_scale > 0"))[[1]]+
+       ggtitle("Effect of max KAI score on performance", "8.b"),
+  plot(hypothesis(max_beta_1_posterior, "max_kaiscore_scale:true_range_scale < 0"))[[1]]+
+       ggtitle("Difference in effect of max KAI score depending on range", "8.c"),
+  nrow = 3)
+
+
+
+#Saving plotting data for the effect of KAI range in model 3
+ma_b_0_plo <- conditional_effects(max_beta_0_posterior)[2][[1]]
+#Plotting effect of KAI range in model 3
+ma_b_0_plo %>% 
+  ggplot(aes(x = true_range_scale, y = normalized_scores))+
+           geom_smooth(aes(y = estimate__, ymin = lower__, ymax = upper__),
+                       stat = "identity")+
+  labs(y = "Normalized Scores", x = "Scaled KAI range of team")+
+  theme_bw()+
+  ggtitle("Effect of KAI score range in model 3")
+
+
+### Code for average predictions
+# avg_dat_int_max <- tibble()
+# for (i in c(-1:1)){
+#   nd <- tibble(max_kaiscore_scale = seq(-1,1, length.out = 200),
+#                true_range_scale = i)
+#   pp_avg <- pp_average(max_beta_0_posterior, max_beta_1_posterior,
+#              method = "fitted",
+#              newdata = nd) %>% 
+#     as_tibble() %>% 
+#     bind_cols(nd)
+#   avg_dat_int_max <- bind_rows(avg_dat_int_max, pp_avg)
+# }
+#   
+# avg_dat_int_max$true_range_scale <- as.factor(avg_dat_int_max$true_range_scale)  
+# avg_dat_int_max %>% 
+#   ggplot(aes(x = max_kaiscore_scale, y = Estimate, fill = true_range_scale,
+#              color = true_range_scale))+
+#   geom_smooth(aes(y = Estimate, ymin = Q2.5, ymax = Q97.5), stat = "identity")+
+#   labs(y = "Normalized Scores", x = "Scaled max team KAI score", 
+#        color = "Scaled KAI range of team", fill = "Scaled KAI range of team")+
+#   theme_bw()+
+#   ggtitle("Average effect of interaction of model 3 & 4")
+# 
+# 
+# 
+# nd <- tibble(max_kaiscore_scale = -1,
+#                true_range_scale = seq(-1,1, length.out = 200))
+# pp_avg_max <- pp_average(max_beta_0_posterior, max_beta_1_posterior,
+#              method = "fitted",
+#              newdata = nd) %>% 
+#     as_tibble() %>% 
+#     bind_cols(nd)
+# 
+# pp_avg_max %>% 
+#   ggplot(aes(x = true_range_scale, y = Estimate))+
+#   geom_smooth(aes(y = Estimate, ymin = Q2.5, ymax = Q97.5), stat = "identity")+
+#   labs(y = "Normalized Scores", x = "Scaled KAI range of team")+
+#   theme_bw()+
+#   ggtitle("Average effects of KAI score range in model 3 & 4", "Scaled team KAI score = -1")
+
+```
+
+
+Model quality plots assembled
+```{r}
+#prior predictive checks
+gridExtra::grid.arrange(m_b_0_pri, m_b_1_pri, ma_b_0_pri, ma_b_1_pri)
+
+#Posterior predictive checks
+gridExtra::grid.arrange(m_b_0_pos, m_b_1_pos, ma_b_0_pos, ma_b_1_pos)
+
+#Trace plots of mean models
+gridExtra::grid.arrange(trace_m_b_0, trace_m_b_1)
+
+#Trace plots of max models
+gridExtra::grid.arrange(trace_ma_b_0, trace_ma_b_1)
+```
+
+```{r}
+#Comparing models
+print(loo_compare(mean_beta_0_posterior, mean_beta_1_posterior,
+                  max_beta_0_posterior, max_beta_1_posterior), simplify = F)
+
+m_weights <- loo_model_weights(mean_beta_0_posterior, mean_beta_1_posterior,
+                  max_beta_0_posterior, max_beta_1_posterior)
+m_weights
+```
+
+
+Testing difference in agent allocation
+
+```{r}
+strategic <- read_csv("strategic_control_ascending_16_neworder_2.csv") #loading data
+colnames(strategic)[3:4] <- c("Diverse_scores", "Homogenous_scores")
+
+#transforming to long format
+strategic_long <- strategic %>% 
+  pivot_longer(cols = names(strategic)[2:4], names_to = "Strategy", values_to = "Score")
+
+#scale scores
+strategic_long$Score_scaled <- scale(strategic_long$Score)
+
+#specify formula
+bf_t <- bf(Score_scaled ~ 0 + Strategy, sigma ~ 0 + Strategy)
+
+#specify priors
+get_prior(bf_t, data = strategic_long)
+bf_t_priors <- c(prior(normal(0, 1), class = b),
+                 prior(normal(0,.1), class =  b, dpar = sigma))
+
+#prior model
+mod_t_prior <- brm(
+  bf_t, 
+  prior = bf_t_priors,
+  data = strategic_long,
+  sample_prior = "only")
+
+#prior predictive check
+mod_t_pri <- pp_check(mod_t_prior, nsamples = 100)+
+  ggtitle("Prior predictive check, Model 7")
+
+#posterior model
+mod_t_posterior <- brm(
+  bf_t, 
+  data = strategic_long,
+  sample_prior = T)
+
+#model summary
+summary(mod_t_posterior)
+
+
+#posterior predictive check
+mod_t_pos <- pp_check(mod_t_posterior, nsamples = 100)+
+  ggtitle("Posterior predictive check, Model 7")
+
+
+#relevelling factors
+strategic_long$Strategy <- as.factor(strategic_long$Strategy)
+strategic_long$Strategy <-  relevel(strategic_long$Strategy, "Diverse_scores")
+strategic_long$Strategy <-  relevel(strategic_long$Strategy, "Control_scores")
+levels(strategic_long$Strategy)
+
+#plotting data
+strategic_long %>% 
+  ggplot(aes(x = Strategy, y = Score_scaled, fill = Strategy))+
+  geom_boxplot(aes(), width = .5)+
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", colour = "red", width = 0.2) + 
+  stat_summary(fun.y = mean, geom = "point", colour = "red")+
+  scale_fill_discrete(name = "Strategy", labels = c("Control", "Diverse", "Homogenous"))+
+  scale_y_continuous(breaks = seq(-4,2, by = 0.5))+
+  theme_bw()+
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  labs(y = "Scaled performance score", title = "Performance based on agent allocation strategy")
+
+#testing hypotheses
+(hypothesis(mod_t_posterior, c("StrategyDiverse_scores > StrategyControl_scores",
+                    "StrategyHomogenous_scores < StrategyControl_scores",
+                    "StrategyDiverse_scores > StrategyHomogenous_scores")))
+
+
+
+#hypotheses plots
+gridExtra::grid.arrange(
+  plot(hypothesis(mod_t_posterior,"StrategyDiverse_scores > StrategyControl_scores"))[[1]]+
+       ggtitle("Difference in performance between control and allocation by diversity", "a"),
+  plot(hypothesis(mod_t_posterior, "StrategyHomogenous_scores < StrategyControl_scores"))[[1]]+
+       ggtitle("Difference in performance between control and allocation by cognitive style preference", "b"),
+  plot(hypothesis(mod_t_posterior, "StrategyDiverse_scores > StrategyHomogenous_scores"))[[1]]+
+       ggtitle("Difference in performance between allocation by cognitive style preference and allocation by diversity", "c"),
+  nrow = 3)
+
+#prior and posterior predictive checks
+gridExtra::grid.arrange(mod_t_pri, mod_t_pos, nrow = 1)
+
+#Inspecting chains in trace plot
+mcmc_trace(mod_t_posterior, pars = c("b_StrategyHomogenous_scores", "b_StrategyControl_scores",
+                                                          "b_StrategyDiverse_scores")) +
+  ggtitle("Markov Chain Monte Carlo trace plots, Model 7")
+
+```
